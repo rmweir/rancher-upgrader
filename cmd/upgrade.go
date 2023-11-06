@@ -124,8 +124,3 @@ func (c *upgradeClient) verifyRancherStableRepoExists() (*repo.Entry, error) {
 
 	return nil, fmt.Errorf("no repository found matach \"releases.rancher.com/server-charts/stable\"")
 }
-
-/*
-func downloadIndex(indexURL string) string {
-	repo.LoadIndexFile()
-}*/
