@@ -3,6 +3,7 @@ module github.com/rmweir/rancher-upgrader
 go 1.20
 
 require (
+	github.com/blang/semver/v4 v4.0.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/urfave/cli/v2 v2.25.7
 	helm.sh/helm/v3 v3.13.1

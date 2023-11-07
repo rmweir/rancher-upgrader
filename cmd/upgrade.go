@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/blang/semver/v4"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 	"helm.sh/helm/v3/pkg/action"
@@ -77,6 +78,12 @@ func UpgradeRancher(ctx *cli.Context) error {
 	}
 
 	fmt.Printf("would you like to update rancher from version [%s] to version [%s]?\n", currentVersion, latestStableRancherVersion.Version)
+	releaseSemverStrings, err := getReleasesBetweenInclusive(currentVersion, latestStableRancherVersion.Version)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("all releases inclusive: %v", releaseSemverStrings)
 	return nil
 }
 
@@ -94,6 +101,24 @@ func newUpgradeClient(kubeconfigPath string) upgradeClient {
 		repoConfigPath: settings.RepositoryConfig,
 		repoCachePath:  settings.RepositoryCache,
 	}
+}
+
+func getReleasesBetweenInclusive(startingRelease, finalRelease string) ([]string, error) {
+	startingSemver, err := semver.New(startingRelease)
+	if err != nil {
+		return nil, err
+	}
+	finalSemver, err := semver.New(finalRelease)
+	if err != nil {
+		return nil, err
+	}
+
+	diff := finalSemver.Patch - startingSemver.Patch
+	releases := make([]string, diff+1)
+	for i := uint64(0); i < diff+1; i++ {
+		releases[i] = fmt.Sprintf("%d.%d.%d", startingSemver.Major, startingSemver.Minor, startingSemver.Patch+i)
+	}
+	return releases, nil
 }
 
 func (c *upgradeClient) updateRepositories() error {

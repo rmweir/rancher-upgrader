@@ -1,6 +1,7 @@
 [CLI]
 upgrade command:
 - finds possible rancher releases
+- compute all release between current and target
 - asks which to target
 - user can specify target
 - list possible upgrades
