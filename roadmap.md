@@ -6,6 +6,8 @@ upgrade command:
 - user can specify target
 - list possible upgrades
 - user specifies upgrade
-- finds all relevant release notes from version A to B
+- lists major bug fixes between each subsequent version between current and target version
+- list known issues between each subsequent version between current and target version
+- lists install/upgrade notes between each subsequent version between current and target version
 - walks user through each critical release note in chronological order
 - gives user opportunity to quit if release note contains deal breaker
