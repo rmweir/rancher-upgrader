@@ -2,6 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
 	"github.com/blang/semver/v4"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
@@ -11,9 +18,18 @@ import (
 	"helm.sh/helm/v3/pkg/getter"
 	"helm.sh/helm/v3/pkg/helmpath"
 	"helm.sh/helm/v3/pkg/repo"
-	"os"
-	"path/filepath"
-	"strings"
+)
+
+const (
+	rancherReleaseNotesPrefix    = "https://api.github.com/repos/rancher/rancher/releases/tags/"
+	majorBugFixHeader            = "# Major Bug Fixes"
+	rancherBehaviorChangesHeader = "# Rancher Behavior Changes"
+	knownIssuesHeader            = "# Known Issues"
+	installUpgradeNotesHeader    = "# Install/Upgrade Notes"
+)
+
+var (
+	markdownCommentsReg = regexp.MustCompile("<!--[A-Za-z0-9-#/, ]*-->")
 )
 
 type upgradeClient struct {
@@ -78,11 +94,32 @@ func UpgradeRancher(ctx *cli.Context) error {
 	}
 
 	fmt.Printf("would you like to update rancher from version [%s] to version [%s]?\n", currentVersion, latestStableRancherVersion.Version)
+	// TODO: accept input here
+
 	releaseSemverStrings, err := getReleasesBetweenInclusive(currentVersion, latestStableRancherVersion.Version)
 	if err != nil {
 		return err
 	}
 
+	bugfixes, knownIssues, err := walkthroughReleaseNotes(releaseSemverStrings)
+	if err != nil {
+		return err
+	}
+
+	/* TODO: walkthrough bugfixes
+	example:
+	"Let's review major bug fixes on the way from vA to vB"
+	"Major Bug Fixes from vA to VA + 1:
+	* bugfix1
+	* bugfix2"
+	*/
+	/* TODO: walkthrough knownIssues
+	example:
+	"Let's walk through known issues one at a time"
+	"knownissue1
+	would you still like to proceed"
+	*/
+	fmt.Printf("%v %v", bugfixes, knownIssues)
 	fmt.Printf("all releases inclusive: %v", releaseSemverStrings)
 	return nil
 }
@@ -119,6 +156,90 @@ func getReleasesBetweenInclusive(startingRelease, finalRelease string) ([]string
 		releases[i] = fmt.Sprintf("%d.%d.%d", startingSemver.Major, startingSemver.Minor, startingSemver.Patch+i)
 	}
 	return releases, nil
+}
+
+func walkthroughReleaseNotes(releases []string) ([][]string, [][]string, error) {
+	bugfixes := make([][]string, len(releases))
+	knownIssues := make([][]string, len(releases))
+
+	var recentBugfixAddition, recentKnownIssuesAddition string
+	lastReleaseBugfixes := ""
+	lastReleaseKnownIssues := ""
+	for index, release := range releases {
+		releaseNotes, err := getReleaseNotes(release)
+		if err != nil {
+			return nil, nil, err
+		}
+		// remove comments
+		releaseNotes = markdownCommentsReg.ReplaceAllString(releaseNotes, "")
+
+		fullBugfixBody, err := parseNotesSections(majorBugFixHeader, rancherBehaviorChangesHeader, releaseNotes)
+		if err != nil {
+			return nil, nil, err
+		}
+		if lastReleaseBugfixes != "" {
+			recentBugfixAddition = strings.Replace(fullBugfixBody, lastReleaseBugfixes, "", 1)
+		} else {
+			recentBugfixAddition = fullBugfixBody
+		}
+		lastReleaseBugfixes = fullBugfixBody
+		bugfixes[index] = parseBulletPoints(recentBugfixAddition)
+
+		fullKnownIssuesBody, err := parseNotesSections(knownIssuesHeader, installUpgradeNotesHeader, releaseNotes)
+		if err != nil {
+			return nil, nil, err
+		}
+		if lastReleaseKnownIssues != "" {
+			recentKnownIssuesAddition = strings.Replace(fullKnownIssuesBody, lastReleaseKnownIssues, "", 1)
+		} else {
+			recentKnownIssuesAddition = fullKnownIssuesBody
+		}
+		lastReleaseKnownIssues = fullKnownIssuesBody
+		knownIssues[index] = parseBulletPoints(recentKnownIssuesAddition)
+	}
+	return bugfixes, knownIssues, nil
+}
+
+func getReleaseNotes(release string) (string, error) {
+	releaseURL := fmt.Sprintf("%sv%s", rancherReleaseNotesPrefix, release)
+	resp, err := http.Get(releaseURL)
+	if err != nil {
+		return "", err
+	}
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	// parsing json is forgone here as it does not reduce the amount of processing needed
+	body := string(bodyBytes)
+
+	return body, nil
+}
+
+func parseNotesSections(header1, header2, notes string) (string, error) {
+	// bugfixBody := body[strings.Index(body, majorBugFixHeader)+len(majorBugFixHeader) : strings.Index(body, rancherBehaviorChangesHeader)]
+	startIndex := strings.Index(notes, header1)
+	stopIndex := strings.Index(notes, header2)
+	if startIndex == -1 || stopIndex == -1 {
+		return "", nil
+	}
+	sectionBody := notes[strings.Index(notes, header1)+len(header1) : strings.Index(notes, header2)]
+	sectionBody = strings.ReplaceAll(sectionBody, "\\r\\n", "")
+	/*
+		if lastReleaseBugfixes != "" {
+			bugfixBody = strings.Replace(bugfixBody, lastReleaseBugfixes, "", 1)
+		}*/
+	return sectionBody, nil
+}
+
+func parseBulletPoints(section string) []string {
+	lines := strings.Split(section, "- ")
+	bullets := make([]string, 0)
+	for _, line := range lines {
+		bullets = append(bullets, line)
+	}
+	return bullets
 }
 
 func (c *upgradeClient) updateRepositories() error {
