@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/blang/semver/v4"
+	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 	"helm.sh/helm/v3/pkg/action"
@@ -21,7 +23,8 @@ import (
 )
 
 const (
-	rancherReleaseNotesPrefix    = "https://api.github.com/repos/rancher/rancher/releases/tags/"
+	ghReleaseNotesAPIPrefix      = "https://api.github.com/repos/rancher/rancher/releases/tags/"
+	rancherReleaseNotesPrefix    = "https://github.com/rancher/rancher/releases/tag/"
 	majorBugFixHeader            = "# Major Bug Fixes"
 	rancherBehaviorChangesHeader = "# Rancher Behavior Changes"
 	knownIssuesHeader            = "# Known Issues"
@@ -93,35 +96,52 @@ func UpgradeRancher(ctx *cli.Context) error {
 		return err
 	}
 
-	fmt.Printf("would you like to update rancher from version [%s] to version [%s]?\n", currentVersion, latestStableRancherVersion.Version)
-	// TODO: accept input here
+	fmt.Printf("Next available update from version [%s] to version [%s].\n", currentVersion, latestStableRancherVersion.Version)
+
+	reader := bufio.NewReader(os.Stdin)
+	cont, err := promptForContinue(reader)
+	if err != nil {
+		return err
+	}
+	if !cont {
+		return nil
+	}
 
 	releaseSemverStrings, err := getReleasesBetweenInclusive(currentVersion, latestStableRancherVersion.Version)
 	if err != nil {
 		return err
 	}
 
-	bugfixes, knownIssues, err := walkthroughReleaseNotes(releaseSemverStrings)
+	bugfixes, knownIssues, err := parseReleaseNotes(releaseSemverStrings)
 	if err != nil {
 		return err
 	}
 
-	/* TODO: walkthrough bugfixes
-	example:
-	"Let's review major bug fixes on the way from vA to vB"
-	"Major Bug Fixes from vA to VA + 1:
-	* bugfix1
-	* bugfix2"
-	*/
-	/* TODO: walkthrough knownIssues
-	example:
-	"Let's walk through known issues one at a time"
-	"knownissue1
-	would you still like to proceed"
-	*/
-	fmt.Printf("%v %v", bugfixes, knownIssues)
-	fmt.Printf("all releases inclusive: %v", releaseSemverStrings)
+	cont, err = walkthroughRelevantNotes(releaseSemverStrings, bugfixes, knownIssues, reader)
+	if err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func promptForContinue(reader *bufio.Reader) (bool, error) {
+	var answer string
+	var err error
+	for answer == "" {
+		fmt.Print("Continue? [y/n]")
+		answer, err = reader.ReadString('\n')
+		if err != nil {
+			return false, err
+		}
+		fmt.Printf(answer)
+		answer = strings.ToLower(strings.TrimSpace(answer))
+		if answer == "n" || answer == "y" {
+			break
+		}
+		fmt.Println("\nInvalid input, try again.")
+	}
+	return answer == "y", nil
 }
 
 func newUpgradeClient(kubeconfigPath string) upgradeClient {
@@ -158,7 +178,7 @@ func getReleasesBetweenInclusive(startingRelease, finalRelease string) ([]string
 	return releases, nil
 }
 
-func walkthroughReleaseNotes(releases []string) ([][]string, [][]string, error) {
+func parseReleaseNotes(releases []string) ([][]string, [][]string, error) {
 	bugfixes := make([][]string, len(releases))
 	knownIssues := make([][]string, len(releases))
 
@@ -200,8 +220,66 @@ func walkthroughReleaseNotes(releases []string) ([][]string, [][]string, error) 
 	return bugfixes, knownIssues, nil
 }
 
+func walkthroughRelevantNotes(releases []string, bugfixes [][]string, knownIssues [][]string, reader *bufio.Reader) (bool, error) {
+	fmt.Printf("There have been %d releases between rancher [%s] and rancher [%s] (inclusive).\n", len(releases)-1, releases[0], releases[len(releases)-1])
+	fmt.Println("Let's go over the changes that have happened throughout these releases")
+	for index, release := range releases {
+		if index == len(release)-1 {
+			break
+		}
+		nextReleaseIndex := index + 1
+		fmt.Printf("%s -> %s\n", release, releases[nextReleaseIndex])
+		cont, err := displayBugFixes(release, bugfixes[nextReleaseIndex], reader)
+		if err != nil {
+			return false, err
+		}
+		if !cont {
+			return false, nil
+		}
+		cont, err = displayKnownIssues(release, knownIssues[nextReleaseIndex], reader)
+		if err != nil {
+			return false, err
+		}
+		if !cont {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func displayBugFixes(release string, bugfixes []string, reader *bufio.Reader) (bool, error) {
+	color.Green("Here are some of the bugfixes introduced by release [%s]", release)
+	for _, bugfix := range bugfixes {
+		if bugfix == "" || bugfix == "-->" {
+			continue
+		}
+		fmt.Printf("* %s\n", bugfix)
+	}
+	fmt.Printf("If you would like to read more about bugfixes in release [%s], visit https://github.com/rancher/rancher/releases/tag/v%s\n", release, release)
+	return promptForContinue(reader)
+}
+
+func displayKnownIssues(release string, knownIssues []string, reader *bufio.Reader) (bool, error) {
+	fmt.Printf("Let's review the known issues in release [%s]\n", release)
+	for _, issue := range knownIssues {
+		if issue == "" || issue == "-->" {
+			continue
+		}
+		fmt.Printf("* %s\n", issue)
+		fmt.Printf("Continue if you acknowledge this issue and still wish to proceed.")
+		cont, err := promptForContinue(reader)
+		if err != nil {
+			return false, err
+		}
+		if !cont {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func getReleaseNotes(release string) (string, error) {
-	releaseURL := fmt.Sprintf("%sv%s", rancherReleaseNotesPrefix, release)
+	releaseURL := fmt.Sprintf("%sv%s", ghReleaseNotesAPIPrefix, release)
 	resp, err := http.Get(releaseURL)
 	if err != nil {
 		return "", err
