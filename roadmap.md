@@ -11,3 +11,4 @@ upgrade command:
 - lists install/upgrade notes between each subsequent version between current and target version
 - walks user through each critical release note in chronological order
 - gives user opportunity to quit if release note contains deal breaker
+- allows user to edit rancher helm chart values from cli

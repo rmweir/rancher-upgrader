@@ -3,7 +3,7 @@ Rancher upgrader informs users on rancher release, helps users upgrade, and enfo
 
 Rancher-upgrader's main goal is to educate users on what they're signing up for when performing a certain upgrade. The actual upgrade is just a bonus.
 
-![rancher-upgrader](assets/rancher-upgrader.gif))
+![rancher-upgrader](assets/rancher-upgrader.gif)
 
 ## How to Use
 `rancher-upgrader --kubeconfig=<kube-config-path> upgrade`
