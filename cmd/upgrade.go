@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/blang/semver/v4"
+	"github.com/enescakir/emoji"
 	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
@@ -19,6 +20,7 @@ import (
 	"helm.sh/helm/v3/pkg/downloader"
 	"helm.sh/helm/v3/pkg/getter"
 	"helm.sh/helm/v3/pkg/helmpath"
+	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/repo"
 )
 
@@ -60,7 +62,8 @@ func UpgradeCommand() *cli.Command {
 	}
 }
 func UpgradeRancher(ctx *cli.Context) error {
-	fmt.Println("Detecting rancher releases...")
+	fmt.Printf("Welcome to rancher upgrader %v\n", emoji.CowboyHatFace)
+	fmt.Printf("%v Detecting rancher releases...\n", emoji.MagnifyingGlassTiltedLeft)
 	kcPath := ctx.String("kubeconfig")
 	client := newUpgradeClient(kcPath)
 	helmActionConfig := client.actionConfig
@@ -70,10 +73,13 @@ func UpgradeRancher(ctx *cli.Context) error {
 	}
 
 	currentVersion := ""
+	var targetRelease *release.Release
 	for _, release := range releases {
 		if release.Chart.Metadata.Name == "rancher" {
-			fmt.Printf("release [%s] in namespace [%s] is a rancher install\n", release.Name, release.Namespace)
+			fmt.Printf("Found rancher release [%s] in namespace [%s]\n", release.Name, release.Namespace)
+			fmt.Printf("Is %s:%s the rancher release you would like to upgrade?\n", release.Name, release.Namespace)
 			currentVersion = release.Chart.Metadata.Version
+			targetRelease = release
 		}
 	}
 
@@ -91,12 +97,12 @@ func UpgradeRancher(ctx *cli.Context) error {
 		return err
 	}
 
-	latestStableRancherVersion, err := indexFile.Get("rancher", "")
+	latestStableRancherChart, err := indexFile.Get("rancher", "")
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Next available update from version [%s] to version [%s].\n", currentVersion, latestStableRancherVersion.Version)
+	fmt.Printf("Next available update from version [%s] to version [%s].\n", currentVersion, latestStableRancherChart.Version)
 
 	reader := bufio.NewReader(os.Stdin)
 	cont, err := promptForContinue(reader)
@@ -107,7 +113,7 @@ func UpgradeRancher(ctx *cli.Context) error {
 		return nil
 	}
 
-	releaseSemverStrings, err := getReleasesBetweenInclusive(currentVersion, latestStableRancherVersion.Version)
+	releaseSemverStrings, err := getReleasesBetweenInclusive(targetRelease.Chart.Metadata.Version, latestStableRancherChart.Version)
 	if err != nil {
 		return err
 	}
@@ -121,6 +127,16 @@ func UpgradeRancher(ctx *cli.Context) error {
 	if err != nil {
 		return err
 	}
+
+	targetRelease.Chart.Metadata.Version = latestStableRancherChart.Version
+	upgradeAction := action.NewUpgrade(helmActionConfig)
+	upgradeAction.DryRun = true
+	newRelease, err := upgradeAction.Run(targetRelease.Name, targetRelease.Chart, targetRelease.Chart.Values)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%v%v You have succesfully upgraded rancher from version [%s] to version [%s]!\n", emoji.PartyPopper, emoji.Fireworks, currentVersion, newRelease.Chart.Metadata.Version)
 
 	return nil
 }
@@ -229,14 +245,14 @@ func walkthroughRelevantNotes(releases []string, bugfixes [][]string, knownIssue
 		}
 		nextReleaseIndex := index + 1
 		fmt.Printf("%s -> %s\n", release, releases[nextReleaseIndex])
-		cont, err := displayBugFixes(release, bugfixes[nextReleaseIndex], reader)
+		cont, err := displayBugFixes(releases[nextReleaseIndex], bugfixes[nextReleaseIndex], reader)
 		if err != nil {
 			return false, err
 		}
 		if !cont {
 			return false, nil
 		}
-		cont, err = displayKnownIssues(release, knownIssues[nextReleaseIndex], reader)
+		cont, err = displayKnownIssues(releases[nextReleaseIndex], knownIssues[nextReleaseIndex], reader)
 		if err != nil {
 			return false, err
 		}
@@ -248,25 +264,38 @@ func walkthroughRelevantNotes(releases []string, bugfixes [][]string, knownIssue
 }
 
 func displayBugFixes(release string, bugfixes []string, reader *bufio.Reader) (bool, error) {
-	color.Green("Here are some of the bugfixes introduced by release [%s]", release)
+	var displayedOpeningMessage bool
+
 	for _, bugfix := range bugfixes {
 		if bugfix == "" || bugfix == "-->" {
 			continue
 		}
-		fmt.Printf("* %s\n", bugfix)
+		if !displayedOpeningMessage {
+			color.Green("Here are some of the bugfixes introduced by release [%s]", release)
+			displayedOpeningMessage = true
+		}
+		fmt.Printf("%v %s\n", emoji.CheckMark, bugfix)
 	}
-	fmt.Printf("If you would like to read more about bugfixes in release [%s], visit https://github.com/rancher/rancher/releases/tag/v%s\n", release, release)
+	if !displayedOpeningMessage {
+		fmt.Println("We did not find any bugfixes, we recommend consulting the release page for more info.")
+	}
+	fmt.Printf("If you would like to read more about bugfixes in release [%s], visit %sv%s\n", release, rancherReleaseNotesPrefix, release)
 	return promptForContinue(reader)
 }
 
 func displayKnownIssues(release string, knownIssues []string, reader *bufio.Reader) (bool, error) {
-	fmt.Printf("Let's review the known issues in release [%s]\n", release)
+	var displayedOpeningMessage bool
+
 	for _, issue := range knownIssues {
 		if issue == "" || issue == "-->" {
 			continue
 		}
-		fmt.Printf("* %s\n", issue)
-		fmt.Printf("Continue if you acknowledge this issue and still wish to proceed.")
+		if !displayedOpeningMessage {
+			fmt.Printf("Let's review the known issues in release [%s]\n", release)
+			displayedOpeningMessage = true
+		}
+		fmt.Printf("%v  %s\n", emoji.RaisedHand, issue)
+		fmt.Printf("Continue if you acknowledge this issue and still wish to proceed. ")
 		cont, err := promptForContinue(reader)
 		if err != nil {
 			return false, err
@@ -274,6 +303,9 @@ func displayKnownIssues(release string, knownIssues []string, reader *bufio.Read
 		if !cont {
 			return false, nil
 		}
+	}
+	if !displayedOpeningMessage {
+		fmt.Printf("We did not find any known issues for release [%s].\n", release)
 	}
 	return true, nil
 }
@@ -335,6 +367,7 @@ func (c *upgradeClient) updateRepositories() error {
 }
 
 func (c *upgradeClient) verifyRancherStableRepoExists() (*repo.Entry, error) {
+	fmt.Println("Verifying rancher-stable repo exists...")
 	f, err := repo.LoadFile(c.repoConfigPath)
 	if err != nil {
 		return nil, err
@@ -342,6 +375,7 @@ func (c *upgradeClient) verifyRancherStableRepoExists() (*repo.Entry, error) {
 	for _, repo := range f.Repositories {
 		isRancherStableRepo := strings.HasSuffix(strings.TrimSuffix(repo.URL, "/"), "releases.rancher.com/server-charts/stable")
 		if isRancherStableRepo {
+			fmt.Printf("%v Rancher-stable repo found!\n", emoji.ThumbsUp)
 			return repo, nil
 		}
 	}
