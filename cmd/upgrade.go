@@ -13,9 +13,12 @@ import (
 	"github.com/blang/semver/v4"
 	"github.com/enescakir/emoji"
 	"github.com/fatih/color"
+	"github.com/ghodss/yaml"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chartutil"
 	cli2 "helm.sh/helm/v3/pkg/cli"
 	"helm.sh/helm/v3/pkg/downloader"
 	"helm.sh/helm/v3/pkg/getter"
@@ -141,7 +144,14 @@ func UpgradeRancher(ctx *cli.Context) error {
 	targetRelease.Chart.Metadata.Version = latestStableRancherChart.Version
 	upgradeAction := action.NewUpgrade(helmActionConfig)
 	upgradeAction.DryRun = true
-	newRelease, err := upgradeAction.Run(targetRelease.Name, targetRelease.Chart, targetRelease.Chart.Values)
+
+	fmt.Println()
+	overrideValues, err := chartValuesPrompt(targetRelease.Chart, targetRelease.Config, reader)
+	if err != nil {
+		return err
+	}
+
+	newRelease, err := upgradeAction.Run(targetRelease.Name, targetRelease.Chart, overrideValues)
 	if err != nil {
 		return err
 	}
@@ -149,6 +159,94 @@ func UpgradeRancher(ctx *cli.Context) error {
 	fmt.Printf("%v%v You have succesfully upgraded rancher from version [%s] to version [%s]!\n", emoji.PartyPopper, emoji.Fireworks, currentVersion, newRelease.Chart.Metadata.Version)
 
 	return nil
+}
+
+func chartValuesPrompt(chart *chart.Chart, values map[string]interface{}, reader *bufio.Reader) (map[string]interface{}, error) {
+	var done bool
+	for !done {
+		if len(values) != 0 {
+			valuesYAMLBytes, err := yaml.Marshal(values)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Println("Here are the current chart override values:")
+			fmt.Printf("%s\n", string(valuesYAMLBytes))
+		} else {
+			fmt.Println("There are currently no chart override values configured.")
+		}
+		answer := ""
+		var err error
+		// make this into a function for any y/n question
+		for answer == "" {
+			fmt.Print("Would you like to see all configured values, including defaults? [y/n]")
+			answer, err = reader.ReadString('\n')
+			if err != nil {
+				return nil, err
+			}
+
+			answer = strings.ToLower(strings.TrimSpace(answer))
+			if answer == "n" || answer == "y" {
+				break
+			}
+			fmt.Println("\nInvalid input, try again.")
+		}
+		if answer == "y" {
+			coalescedValues, err := chartutil.CoalesceValues(chart, values)
+			if err != nil {
+				return nil, err
+			}
+			coalescedValuesYAMLBytes, err := yaml.Marshal(coalescedValues)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Println("Values to be applied to rancher chart:")
+			fmt.Println(string(coalescedValuesYAMLBytes))
+		}
+		answer = ""
+		for answer == "" {
+			fmt.Println("\nSelect one of the following options by entering their corresponding number")
+			fmt.Println("1. Continue with displayed override chart values")
+			fmt.Println("2. Configure different override values")
+			answer, err = reader.ReadString('\n')
+			if err != nil {
+				return nil, err
+			}
+			answer = strings.ToLower(strings.TrimSpace(answer))
+			if answer == "1" {
+				done = true
+				break
+			}
+
+			if answer == "2" {
+				values, err = uploadValuesPrompt(reader)
+				continue
+			}
+			fmt.Println("\nInvalid input, please try again.")
+		}
+	}
+	return values, nil
+}
+
+func uploadValuesPrompt(reader *bufio.Reader) (map[string]interface{}, error) {
+	fmt.Printf("Enter a filepath for a values.yaml file: ")
+	filepath, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(filepath)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+	var values map[string]interface{}
+	err = yaml.Unmarshal(data, &values)
+	if err != nil {
+		return nil, err
+	}
+	return values, nil
 }
 
 func getNextSupportedChartVersion(currentVersion string, index *repo.IndexFile) (string, error) {
@@ -194,6 +292,7 @@ func getNextSupportedChartVersion(currentVersion string, index *repo.IndexFile) 
 	// the rancher install is up-to-date.
 	return currentVersion, nil
 }
+
 func promptForContinue(reader *bufio.Reader) (bool, error) {
 	var answer string
 	var err error
@@ -203,7 +302,7 @@ func promptForContinue(reader *bufio.Reader) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		fmt.Printf(answer)
+
 		answer = strings.ToLower(strings.TrimSpace(answer))
 		if answer == "n" || answer == "y" {
 			break

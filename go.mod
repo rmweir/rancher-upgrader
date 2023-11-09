@@ -6,6 +6,7 @@ require (
 	github.com/blang/semver/v4 v4.0.0
 	github.com/enescakir/emoji v1.0.0
 	github.com/fatih/color v1.13.0
+	github.com/ghodss/yaml v1.0.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/urfave/cli/v2 v2.25.7
 	helm.sh/helm/v3 v3.13.1
