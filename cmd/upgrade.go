@@ -97,7 +97,17 @@ func UpgradeRancher(ctx *cli.Context) error {
 		return err
 	}
 
-	latestStableRancherChart, err := indexFile.Get("rancher", "")
+	nextSupportedChartVersion, err := getNextSupportedChartVersion(currentVersion, indexFile)
+	if err != nil {
+		return err
+	}
+
+	if currentVersion == nextSupportedChartVersion {
+		fmt.Printf("%v Your rancher install is already up to date!", emoji.PartyingFace)
+		return nil
+	}
+
+	latestStableRancherChart, err := indexFile.Get("rancher", nextSupportedChartVersion)
 	if err != nil {
 		return err
 	}
@@ -141,6 +151,49 @@ func UpgradeRancher(ctx *cli.Context) error {
 	return nil
 }
 
+func getNextSupportedChartVersion(currentVersion string, index *repo.IndexFile) (string, error) {
+	currentChartVersion, err := semver.New(currentVersion)
+	if err != nil {
+		return "", err
+	}
+
+	index.SortEntries()
+	nextMinorUpgrade := ""
+	latestPatchOnCurrentMinorVersion := ""
+	for _, chartVersion := range index.Entries["rancher"] {
+		chartSemver, err := semver.New(chartVersion.Version)
+		if err != nil {
+			return "", err
+		}
+		if nextMinorUpgrade == "" && chartSemver.Minor-1 == currentChartVersion.Minor {
+			nextMinorUpgrade = chartVersion.Version
+			continue
+		}
+		if chartSemver.Minor != currentChartVersion.Minor {
+			continue
+		}
+		latestPatchOnCurrentMinorVersion = chartVersion.Version
+		break
+	}
+
+	if latestPatchOnCurrentMinorVersion == "" {
+		// should always be able to detect latest patch for current minor version
+		return "", fmt.Errorf("there was an issue detecting the next supported rancher chart version: could not"+
+			"detect latest patch for line [%d.%d.x]", currentChartVersion.Major, currentChartVersion.Minor)
+	}
+
+	if currentVersion != latestPatchOnCurrentMinorVersion {
+		return latestPatchOnCurrentMinorVersion, nil
+	}
+
+	if nextMinorUpgrade != "" {
+		return nextMinorUpgrade, nil
+	}
+
+	// if the current version is equal to latest patch on that version's minor and there is no next minor upgrade,
+	// the rancher install is up-to-date.
+	return currentVersion, nil
+}
 func promptForContinue(reader *bufio.Reader) (bool, error) {
 	var answer string
 	var err error
