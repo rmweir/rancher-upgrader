@@ -259,7 +259,7 @@ func parseReleaseNotes(releases []string) ([][]string, [][]string, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		// remove comments
+
 		releaseNotes = markdownCommentsReg.ReplaceAllString(releaseNotes, "")
 
 		fullBugfixBody, err := parseNotesSections(majorBugFixHeader, rancherBehaviorChangesHeader, releaseNotes)
@@ -381,7 +381,6 @@ func getReleaseNotes(release string) (string, error) {
 }
 
 func parseNotesSections(header1, header2, notes string) (string, error) {
-	// bugfixBody := body[strings.Index(body, majorBugFixHeader)+len(majorBugFixHeader) : strings.Index(body, rancherBehaviorChangesHeader)]
 	startIndex := strings.Index(notes, header1)
 	stopIndex := strings.Index(notes, header2)
 	if startIndex == -1 || stopIndex == -1 {
@@ -389,10 +388,7 @@ func parseNotesSections(header1, header2, notes string) (string, error) {
 	}
 	sectionBody := notes[strings.Index(notes, header1)+len(header1) : strings.Index(notes, header2)]
 	sectionBody = strings.ReplaceAll(sectionBody, "\\r\\n", "")
-	/*
-		if lastReleaseBugfixes != "" {
-			bugfixBody = strings.Replace(bugfixBody, lastReleaseBugfixes, "", 1)
-		}*/
+
 	return sectionBody, nil
 }
 
