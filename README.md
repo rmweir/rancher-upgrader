@@ -1,4 +1,5 @@
 ![rancher-upgrader](assets/rancher-upgrader.png)
+
 Rancher upgrader informs users on rancher release, helps users upgrade, and enforces rancher's supported upgrade path.
 
 Rancher-upgrader's main goal is to educate users on what they're signing up for when performing a certain upgrade. The actual upgrade is just a bonus.
