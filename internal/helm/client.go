@@ -2,6 +2,10 @@ package helm
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/blang/semver/v4"
 	"github.com/enescakir/emoji"
 	"github.com/sirupsen/logrus"
@@ -12,9 +16,6 @@ import (
 	"helm.sh/helm/v3/pkg/helmpath"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/repo"
-	"os"
-	"path/filepath"
-	"strings"
 )
 
 type Client struct {
