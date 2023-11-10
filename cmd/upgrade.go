@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -14,15 +13,10 @@ import (
 	"github.com/enescakir/emoji"
 	"github.com/fatih/color"
 	"github.com/ghodss/yaml"
-	"github.com/sirupsen/logrus"
+	"github.com/rmweir/rancher-upgrader/internal/helm"
 	"github.com/urfave/cli/v2"
-	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
-	cli2 "helm.sh/helm/v3/pkg/cli"
-	"helm.sh/helm/v3/pkg/downloader"
-	"helm.sh/helm/v3/pkg/getter"
-	"helm.sh/helm/v3/pkg/helmpath"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/repo"
 )
@@ -40,10 +34,15 @@ var (
 	markdownCommentsReg = regexp.MustCompile("<!--[A-Za-z0-9-#/, ]*-->")
 )
 
-type upgradeClient struct {
-	actionConfig   *action.Configuration
-	repoConfigPath string
-	repoCachePath  string
+type helmExecer interface {
+	FindRancherRelease() (*release.Release, error)
+	GetNextSupportedRancherChartVersion(currentVersion string) (string, error)
+	GetRancherChartForVersion(version string) (*repo.ChartVersion, error)
+	Upgrade(release *release.Release, overrideValues map[string]interface{}) (*release.Release, error)
+}
+
+type UpgradeActionClient struct {
+	helmExecer helmExecer
 }
 
 func UpgradeCommand() *cli.Command {
@@ -57,50 +56,37 @@ func UpgradeCommand() *cli.Command {
 		},
 	}
 
+	c := &UpgradeActionClient{}
 	return &cli.Command{
 		Name:   "upgrade",
 		Usage:  "Bring the cluster up",
-		Action: UpgradeRancher,
+		Action: c.UpgradeRancher,
 		Flags:  flags,
 	}
 }
-func UpgradeRancher(ctx *cli.Context) error {
+
+func (u *UpgradeActionClient) Init(kubeconfigPath string) error {
+	client, err := helm.NewClient(kubeconfigPath)
+	if err != nil {
+		return err
+	}
+	u.helmExecer = client
+	return nil
+}
+
+func (u *UpgradeActionClient) UpgradeRancher(ctx *cli.Context) error {
 	fmt.Printf("Welcome to rancher upgrader %v\n", emoji.CowboyHatFace)
 	fmt.Printf("%v Detecting rancher releases...\n", emoji.MagnifyingGlassTiltedLeft)
-	kcPath := ctx.String("kubeconfig")
-	client := newUpgradeClient(kcPath)
-	helmActionConfig := client.actionConfig
-	releases, err := action.NewList(helmActionConfig).Run()
+
+	u.Init(ctx.String("kubeconfig"))
+
+	targetRelease, err := u.helmExecer.FindRancherRelease()
 	if err != nil {
 		return err
 	}
+	currentVersion := targetRelease.Chart.Metadata.Version
 
-	currentVersion := ""
-	var targetRelease *release.Release
-	for _, release := range releases {
-		if release.Chart.Metadata.Name == "rancher" {
-			fmt.Printf("Found rancher release [%s] in namespace [%s]\n", release.Name, release.Namespace)
-			fmt.Printf("Is %s:%s the rancher release you would like to upgrade?\n", release.Name, release.Namespace)
-			currentVersion = release.Chart.Metadata.Version
-			targetRelease = release
-		}
-	}
-
-	rancherStableRepo, err := client.verifyRancherStableRepoExists()
-	if err != nil {
-		return err
-	}
-
-	if err := client.updateRepositories(); err != nil {
-		return err
-	}
-
-	indexFile, err := repo.LoadIndexFile(filepath.Join(client.repoCachePath, filepath.Join(helmpath.CacheIndexFile(rancherStableRepo.Name))))
-	if err != nil {
-		return err
-	}
-
-	nextSupportedChartVersion, err := getNextSupportedChartVersion(currentVersion, indexFile)
+	nextSupportedChartVersion, err := u.helmExecer.GetNextSupportedRancherChartVersion(targetRelease.Chart.Metadata.Version)
 	if err != nil {
 		return err
 	}
@@ -110,7 +96,7 @@ func UpgradeRancher(ctx *cli.Context) error {
 		return nil
 	}
 
-	latestStableRancherChart, err := indexFile.Get("rancher", nextSupportedChartVersion)
+	latestStableRancherChart, err := u.helmExecer.GetRancherChartForVersion(nextSupportedChartVersion)
 	if err != nil {
 		return err
 	}
@@ -126,7 +112,7 @@ func UpgradeRancher(ctx *cli.Context) error {
 		return nil
 	}
 
-	releaseSemverStrings, err := getReleasesBetweenInclusive(targetRelease.Chart.Metadata.Version, latestStableRancherChart.Version)
+	releaseSemverStrings, err := getReleasesBetweenInclusive(currentVersion, latestStableRancherChart.Version)
 	if err != nil {
 		return err
 	}
@@ -141,17 +127,14 @@ func UpgradeRancher(ctx *cli.Context) error {
 		return err
 	}
 
-	targetRelease.Chart.Metadata.Version = latestStableRancherChart.Version
-	upgradeAction := action.NewUpgrade(helmActionConfig)
-	upgradeAction.DryRun = true
-
 	fmt.Println()
 	overrideValues, err := chartValuesPrompt(targetRelease.Chart, targetRelease.Config, reader)
 	if err != nil {
 		return err
 	}
 
-	newRelease, err := upgradeAction.Run(targetRelease.Name, targetRelease.Chart, overrideValues)
+	targetRelease.Chart.Metadata.Version = latestStableRancherChart.Version
+	newRelease, err := u.helmExecer.Upgrade(targetRelease, overrideValues)
 	if err != nil {
 		return err
 	}
@@ -249,50 +232,6 @@ func uploadValuesPrompt(reader *bufio.Reader) (map[string]interface{}, error) {
 	return values, nil
 }
 
-func getNextSupportedChartVersion(currentVersion string, index *repo.IndexFile) (string, error) {
-	currentChartVersion, err := semver.New(currentVersion)
-	if err != nil {
-		return "", err
-	}
-
-	index.SortEntries()
-	nextMinorUpgrade := ""
-	latestPatchOnCurrentMinorVersion := ""
-	for _, chartVersion := range index.Entries["rancher"] {
-		chartSemver, err := semver.New(chartVersion.Version)
-		if err != nil {
-			return "", err
-		}
-		if nextMinorUpgrade == "" && chartSemver.Minor-1 == currentChartVersion.Minor {
-			nextMinorUpgrade = chartVersion.Version
-			continue
-		}
-		if chartSemver.Minor != currentChartVersion.Minor {
-			continue
-		}
-		latestPatchOnCurrentMinorVersion = chartVersion.Version
-		break
-	}
-
-	if latestPatchOnCurrentMinorVersion == "" {
-		// should always be able to detect latest patch for current minor version
-		return "", fmt.Errorf("there was an issue detecting the next supported rancher chart version: could not"+
-			"detect latest patch for line [%d.%d.x]", currentChartVersion.Major, currentChartVersion.Minor)
-	}
-
-	if currentVersion != latestPatchOnCurrentMinorVersion {
-		return latestPatchOnCurrentMinorVersion, nil
-	}
-
-	if nextMinorUpgrade != "" {
-		return nextMinorUpgrade, nil
-	}
-
-	// if the current version is equal to latest patch on that version's minor and there is no next minor upgrade,
-	// the rancher install is up-to-date.
-	return currentVersion, nil
-}
-
 func promptForContinue(reader *bufio.Reader) (bool, error) {
 	var answer string
 	var err error
@@ -310,22 +249,6 @@ func promptForContinue(reader *bufio.Reader) (bool, error) {
 		fmt.Println("\nInvalid input, try again.")
 	}
 	return answer == "y", nil
-}
-
-func newUpgradeClient(kubeconfigPath string) upgradeClient {
-	actionConfig := new(action.Configuration)
-
-	settings := cli2.New()
-	settings.KubeConfig = kubeconfigPath
-
-	if err := actionConfig.Init(settings.RESTClientGetter(), "", os.Getenv("HELM_DRIVER"), logrus.Debugf); err != nil {
-		os.Exit(1)
-	}
-	return upgradeClient{
-		actionConfig:   actionConfig,
-		repoConfigPath: settings.RepositoryConfig,
-		repoCachePath:  settings.RepositoryCache,
-	}
 }
 
 func getReleasesBetweenInclusive(startingRelease, finalRelease string) ([]string, error) {
@@ -498,35 +421,4 @@ func parseBulletPoints(section string) []string {
 		bullets = append(bullets, line)
 	}
 	return bullets
-}
-
-func (c *upgradeClient) updateRepositories() error {
-	manager := downloader.Manager{
-		RepositoryCache:  c.repoCachePath,
-		RepositoryConfig: c.repoConfigPath,
-		Out:              os.Stdout,
-		Getters: getter.Providers{getter.Provider{
-			Schemes: []string{"http", "https"},
-			New:     getter.NewHTTPGetter,
-		}},
-	}
-
-	return manager.UpdateRepositories()
-}
-
-func (c *upgradeClient) verifyRancherStableRepoExists() (*repo.Entry, error) {
-	fmt.Println("Verifying rancher-stable repo exists...")
-	f, err := repo.LoadFile(c.repoConfigPath)
-	if err != nil {
-		return nil, err
-	}
-	for _, repo := range f.Repositories {
-		isRancherStableRepo := strings.HasSuffix(strings.TrimSuffix(repo.URL, "/"), "releases.rancher.com/server-charts/stable")
-		if isRancherStableRepo {
-			fmt.Printf("%v Rancher-stable repo found!\n", emoji.ThumbsUp)
-			return repo, nil
-		}
-	}
-
-	return nil, fmt.Errorf("no repository found matach \"releases.rancher.com/server-charts/stable\"")
 }
